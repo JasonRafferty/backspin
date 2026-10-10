@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://*.scdn.co https://*.spotifycdn.com">
+  <title>Backspin</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="deck" class="deck">
+    <div id="led" class="led"></div>
+
+    <div class="platter">
+      <div id="record" class="record">
+        <div class="label">
+          <div class="label-blank"><span>33⅓</span></div>
+          <img id="artA" class="art" alt="">
+          <img id="artB" class="art" alt="">
+        </div>
+        <div class="spindle"></div>
+      </div>
+      <div class="sheen"></div>
+      <div id="hint" class="hint"></div>
+    </div>
+
+    <div class="arm-rest"></div>
+    <div id="arm" class="arm">
+      <svg viewBox="0 0 40 205" width="40" height="205" aria-hidden="true">
+        <defs>
+          <linearGradient id="metal" x1="0" x2="1">
+            <stop offset="0" stop-color="#8d8d95"/>
+            <stop offset=".5" stop-color="#f2f2f6"/>
+            <stop offset="1" stop-color="#7d7d85"/>
+          </linearGradient>
+        </defs>
+        <rect x="12" y="1" width="16" height="17" rx="3" fill="#2a2a2f" stroke="#4a4a52"/>
+        <rect x="18.5" y="14" width="3" height="20" fill="url(#metal)"/>
+        <circle cx="20" cy="34" r="15" fill="#1c1c20" stroke="#3c3c44"/>
+        <circle cx="20" cy="34" r="7" fill="url(#metal)"/>
+        <path d="M20 34 L20 160 L14 178" stroke="url(#metal)" stroke-width="3.5" fill="none"
+              stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="7" y="174" width="14" height="22" rx="2.5" transform="rotate(18 14 185)"
+              fill="#25252a" stroke="#5a5a62"/>
+      </svg>
+    </div>
+
+    <footer class="bar">
+      <div class="progress"><div id="progress" class="progress-fill"></div></div>
+      <button id="prev" class="ctl" aria-label="Previous track">
+        <svg viewBox="0 0 16 16"><path d="M3 2h2v12H3zM14 2v12L6 8z"/></svg>
+      </button>
+      <div class="meta">
+        <div id="title" class="title">Backspin</div>
+        <div id="artist" class="artist"></div>
+      </div>
+      <button id="next" class="ctl" aria-label="Next track">
+        <svg viewBox="0 0 16 16"><path d="M11 2h2v12h-2zM2 2v12l8-6z"/></svg>
+      </button>
+    </footer>
+
+    <div id="toast" class="toast" hidden></div>
+
+    <section id="setup" class="panel" hidden>
+      <h1>Connect Spotify</h1>
+      <ol>
+        <li><button id="openDash" class="link">Open the Spotify dashboard</button> and create an app (tick <b>Web API</b>).</li>
+        <li>Add this Redirect URI:<br>
+          <code id="redirect"></code> <button id="copyRedirect" class="tiny">Copy</button></li>
+        <li>Paste the app’s Client ID:</li>
+      </ol>
+      <form id="clientForm" class="row">
+        <input id="clientId" placeholder="Client ID" spellcheck="false" autocomplete="off">
+        <button class="primary" type="submit">Save</button>
+      </form>
+      <p id="setupError" class="error"></p>
+    </section>
+
+    <section id="login" class="panel center" hidden>
+      <div class="mini-disc"></div>
+      <h1>Almost there</h1>
+      <p>Log in with Spotify in your browser to connect the turntable.</p>
+      <button id="loginBtn" class="primary">Log in with Spotify</button>
+      <button id="cancelLogin" class="link" hidden>Cancel</button>
+      <p id="loginError" class="error"></p>
+      <button id="changeId" class="link subtle">Use a different Client ID</button>
+    </section>
+  </main>
+  <script src="renderer.js"></script>
+</body>
+</html>

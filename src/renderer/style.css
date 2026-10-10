@@ -40,6 +40,9 @@ html, body {
   transition: --accent 1.2s ease, --accent2 1.2s ease;
 }
 
+/* Set while dragging the record, tonearm or resize grip (see hold() in renderer.js). */
+.deck.holding, .deck.holding * { -webkit-app-region: no-drag !important; }
+
 .led {
   position: absolute;
   left: 12px;

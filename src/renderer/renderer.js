@@ -15,7 +15,7 @@ const LABEL_RADIUS = 0.28; // label radius as a fraction of the record's diamete
 const ARM_PIVOT = { x: 248, y: 34 }; // tonearm pivot, in deck coordinates
 const ARM_START = 9; // tonearm angle at the outer edge (start of a track)…
 const ARM_END = 24; // …and right by the label (end of a track)
-const ARM_LIFT = 5; // drop the arm below this angle and playback pauses
+const ARM_LIFT = 7.5; // needle is off the vinyl below this angle: lifting it here pauses
 const ARM_MAX = 27;
 const SKIP_ANGLE = 80; // how far you have to spin the record to skip
 const SKIP_FLING = 900; // or how fast you have to flick it (deg/s)
@@ -163,19 +163,38 @@ function hidePeek() {
   renderTrack();
 }
 
+// While something is being dragged, turn the whole widget into a no-window-drag zone.
+// Otherwise letting go over the turntable body is swallowed as a window drag on macOS
+// and the drag never ends.
+function hold(el, e) {
+  el.setPointerCapture(e.pointerId);
+  deck.classList.add('holding');
+}
+function release() {
+  deck.classList.remove('holding');
+}
+// Safety net for any release we still miss: end the drag on the next move with no button down.
+function wireDrag(el, onMove, onEnd) {
+  el.addEventListener('pointermove', (e) => (e.buttons === 0 ? onEnd() : onMove(e)));
+  el.addEventListener('pointerup', onEnd);
+  el.addEventListener('pointercancel', onEnd);
+  el.addEventListener('lostpointercapture', onEnd);
+}
+
 record.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return;
   const c = geometry();
   drag = { c, last: pointerAngle(e, c), total: 0, samples: [], onLabel: onLabel(e, c) };
-  record.setPointerCapture(e.pointerId);
+  hold(record, e);
   record.classList.add('grabbing');
 });
 
 record.addEventListener('pointermove', (e) => {
-  if (!drag) {
-    hint.classList.toggle('visible', isReady() && onLabel(e, geometry()));
-    return;
-  }
+  if (!drag) hint.classList.toggle('visible', isReady() && onLabel(e, geometry()));
+});
+
+function dragRecord(e) {
+  if (!drag) return;
   const a = pointerAngle(e, drag.c);
   let d = a - drag.last;
   if (d > 180) d -= 360;
@@ -187,12 +206,13 @@ record.addEventListener('pointermove', (e) => {
   drag.samples.push({ t: now, d });
   while (drag.samples.length && now - drag.samples[0].t > 80) drag.samples.shift();
   showPeek(drag.total);
-});
+}
 
 function endDrag() {
   if (!drag) return;
   const { total, samples, onLabel: clickedLabel } = drag;
   drag = null;
+  release();
   record.classList.remove('grabbing');
 
   const span = samples.length > 1 ? (samples.at(-1).t - samples[0].t) / 1000 : 0;
@@ -208,8 +228,7 @@ function endDrag() {
   else if (total < -SKIP_ANGLE || fling < -SKIP_FLING) skip('prev', { kick: false });
   hidePeek();
 }
-record.addEventListener('pointerup', endDrag);
-record.addEventListener('pointercancel', endDrag);
+wireDrag(record, dragRecord, endDrag);
 record.addEventListener('pointerleave', () => hint.classList.remove('visible'));
 
 // Scroll over the record: down = next, up = previous.
@@ -248,13 +267,14 @@ const armHit = $('armHit');
 armHit.addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || !isReady() || !player?.track || optimistic) return;
   e.stopPropagation();
-  armHit.setPointerCapture(e.pointerId);
+  hold(armHit, e);
   arm.classList.add('dragging');
   armDrag = { deg: 0, fraction: trackProgress() };
   moveArm(e);
 });
 
 function moveArm(e) {
+  if (!armDrag) return;
   armDrag.deg = armAngleAt(e);
   armDrag.fraction = armFraction(armDrag.deg);
   arm.style.transform = `rotate(${armDrag.deg}deg)`;
@@ -264,14 +284,12 @@ function moveArm(e) {
     : `${formatTime(armDrag.fraction * player.track.durationMs)} / ${formatTime(player.track.durationMs)}`;
 }
 
-armHit.addEventListener('pointermove', (e) => {
-  if (armDrag) moveArm(e);
-});
 
 function endArmDrag() {
   if (!armDrag) return;
   const { deg, fraction } = armDrag;
   armDrag = null;
+  release();
   arm.classList.remove('dragging');
   bubble.hidden = true;
 
@@ -288,8 +306,7 @@ function endArmDrag() {
     else setPlaying(true);
   }
 }
-armHit.addEventListener('pointerup', endArmDrag);
-armHit.addEventListener('pointercancel', endArmDrag);
+wireDrag(armHit, moveArm, endArmDrag);
 
 /* ---------- Resize grip ---------- */
 
@@ -297,20 +314,17 @@ const grip = $('grip');
 let resizing = false;
 grip.addEventListener('pointerdown', (e) => {
   e.preventDefault();
-  grip.setPointerCapture(e.pointerId);
+  hold(grip, e);
   resizing = true;
   api.resizeStart();
-});
-grip.addEventListener('pointermove', () => {
-  if (resizing) api.resizeMove();
 });
 const endResize = () => {
   if (!resizing) return;
   resizing = false;
+  release();
   api.resizeEnd();
 };
-grip.addEventListener('pointerup', endResize);
-grip.addEventListener('pointercancel', endResize);
+wireDrag(grip, () => resizing && api.resizeMove(), endResize);
 
 /* ---------- Album art, colour & vinyl ---------- */
 

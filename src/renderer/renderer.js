@@ -3,30 +3,47 @@ const $ = (id) => document.getElementById(id);
 
 const deck = $('deck');
 const record = $('record');
+const label = $('label');
 const arm = $('arm');
 const hint = $('hint');
 const progress = $('progress');
+const peek = $('peek');
+const bubble = $('bubble');
 
 const PLAY_SPEED = 200; // degrees per second ≈ 33⅓ rpm
-const LABEL_RADIUS = 0.28; // label size as a fraction of the record's diameter
-const ARM_START = 15; // tonearm angle at the start of a track…
-const ARM_END = 23; // …and at the end
-const SKIP_ANGLE = 80; // how far you have to drag the record to skip
+const LABEL_RADIUS = 0.28; // label radius as a fraction of the record's diameter
+const ARM_PIVOT = { x: 248, y: 34 }; // tonearm pivot, in deck coordinates
+const ARM_START = 9; // tonearm angle at the outer edge (start of a track)…
+const ARM_END = 23; // …and near the label (end of a track)
+const ARM_LIFT = 5; // drop the arm below this angle and playback pauses
+const ARM_MAX = 27;
+const SKIP_ANGLE = 80; // how far you have to spin the record to skip
 const SKIP_FLING = 900; // or how fast you have to flick it (deg/s)
+const PEEK_FROM = 12; // degrees of spin before the next cover starts to show
+const OPTIMISTIC_MS = 3000; // how long to trust a skip before Spotify confirms it
 
 const isMac = navigator.userAgent.includes('Mac');
 const mod = isMac ? '⌘⌥' : 'Ctrl+Alt+';
 $('prev').title = `Previous (${mod}←)`;
 $('next').title = `Next (${mod}→)`;
+$('playPause').title = `Play / Pause (${mod}↓)`;
 
 let ui = null;
 let player = null;
+// Right after a skip we show the target track straight away, until Spotify catches up.
+let optimistic = null; // { fromId, track | null, until }
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const isReady = () => ui?.phase === 'ready';
+
+function formatTime(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
 
 function trackProgress() {
   const t = player?.track;
-  if (!t?.durationMs) return 0;
+  if (optimistic || !t?.durationMs) return 0;
   const pos = player.progressMs + (player.isPlaying ? Date.now() - player.receivedAt : 0);
   return clamp(pos / t.durationMs, 0, 1);
 }
@@ -36,6 +53,7 @@ function trackProgress() {
 let angle = 0;
 let velocity = 0;
 let drag = null;
+let armDrag = null;
 let lastFrame = performance.now();
 
 function tick(now) {
@@ -43,18 +61,19 @@ function tick(now) {
   lastFrame = now;
   if (!drag) {
     const target = player?.isPlaying ? PLAY_SPEED : 0;
-    // Spin up quickly, coast down slowly like a real platter.
-    const rate = velocity < target ? 3 : 0.9;
+    // Spin up quickly, brake firmly when stopped, coast down slowly after a flick.
+    const rate = target === 0 ? 2.4 : velocity < target ? 3 : 0.9;
     velocity += (target - velocity) * (1 - Math.exp(-rate * dt));
     angle = (angle + velocity * dt) % 360;
   }
   record.style.transform = `rotate(${angle}deg)`;
-  progress.style.transform = `scaleX(${trackProgress()})`;
+  progress.style.transform = `scaleX(${armDrag ? armDrag.fraction : trackProgress()})`;
   requestAnimationFrame(tick);
 }
 requestAnimationFrame(tick);
 
 function updateArm() {
+  if (armDrag) return;
   const deg = player?.isPlaying ? ARM_START + (ARM_END - ARM_START) * trackProgress() : 0;
   arm.style.transform = `rotate(${deg}deg)`;
 }
@@ -62,27 +81,85 @@ setInterval(updateArm, 1000);
 
 /* ---------- Controls ---------- */
 
-function control(action) {
-  if (ui?.phase !== 'ready') return;
-  api.control(action);
+function skip(direction, { kick = true } = {}) {
+  if (!isReady()) return;
+  if (kick) velocity += direction === 'next' ? 1200 : -1200;
+  Sounds.play('scratch', direction === 'next' ? 1 : -1);
+
+  if (player?.track) {
+    const target = optimistic ? null : (direction === 'next' ? player.next : player.prev);
+    optimistic = { fromId: player.track.id, track: target ?? null, until: Date.now() + OPTIMISTIC_MS };
+    setTimeout(renderTrack, OPTIMISTIC_MS + 50);
+    renderTrack();
+  }
+  api.control(direction);
 }
 
-function skip(direction, kick = true) {
-  if (kick) velocity += direction === 'next' ? 1200 : -1200;
-  control(direction);
+function setPlaying(play) {
+  if (!isReady() || !!player?.isPlaying === play) return;
+  Sounds.play(play ? 'needleDrop' : 'powerDown');
+  api.control(play ? 'play' : 'pause');
 }
+
+const togglePlay = () => setPlaying(!player?.isPlaying);
 
 $('prev').addEventListener('click', () => skip('prev'));
 $('next').addEventListener('click', () => skip('next'));
+$('playPause').addEventListener('click', togglePlay);
 
-// Drag the record to scrub it; flick or spin it far enough to skip.
+api.onRemote((action) => {
+  if (action === 'next' || action === 'prev') skip(action);
+  else if (action === 'toggle') togglePlay();
+});
+
+window.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'ArrowRight') skip('next');
+  else if (e.key === 'ArrowLeft') skip('prev');
+  else if (e.key === ' ') togglePlay();
+});
+
+deck.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  api.menu();
+});
+
+/* ---------- Spin the record: drag to scrub, flick to skip, peek at what's next ---------- */
 // Clockwise = next, anticlockwise = previous. Click the label to play/pause.
+
 function geometry() {
   const r = record.getBoundingClientRect();
   return { x: r.left + r.width / 2, y: r.top + r.height / 2, radius: r.width / 2 };
 }
 const pointerAngle = (e, c) => Math.atan2(e.clientY - c.y, e.clientX - c.x) * 180 / Math.PI;
 const onLabel = (e, c) => Math.hypot(e.clientX - c.x, e.clientY - c.y) < c.radius * LABEL_RADIUS * 2;
+
+function showPeek(total) {
+  const direction = total > 0 ? 'next' : 'prev';
+  const target = direction === 'next' ? player?.next : player?.prev;
+  const strength = clamp((Math.abs(total) - PEEK_FROM) / (SKIP_ANGLE - PEEK_FROM), 0, 1);
+  if (strength <= 0 || !isReady()) return hidePeek();
+
+  if (target?.art && peek.dataset.src !== target.art) {
+    peek.dataset.src = target.art;
+    peek.src = target.art;
+  }
+  peek.style.opacity = target?.art ? String(strength * 0.95) : '0';
+  $('title').textContent = target?.name ?? (direction === 'next' ? 'Next track' : 'Previous track');
+  $('artist').textContent = `${direction === 'next' ? 'Up next' : 'Back to'}${target ? ` · ${target.artists}` : ''}`;
+}
+
+function hidePeek() {
+  if (peek.style.opacity === '0') return;
+  // If we just skipped to the peeked track, hold it until the real label has faded in underneath.
+  const committed = optimistic?.track?.art && optimistic.track.art === peek.dataset.src;
+  const src = peek.dataset.src;
+  setTimeout(() => {
+    if (!drag && peek.dataset.src === src) peek.style.opacity = '0';
+  }, committed ? 750 : 0);
+  if (!committed) peek.style.opacity = '0';
+  renderTrack();
+}
 
 record.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return;
@@ -94,8 +171,7 @@ record.addEventListener('pointerdown', (e) => {
 
 record.addEventListener('pointermove', (e) => {
   if (!drag) {
-    const c = geometry();
-    hint.classList.toggle('visible', ui?.phase === 'ready' && onLabel(e, c));
+    hint.classList.toggle('visible', isReady() && onLabel(e, geometry()));
     return;
   }
   const a = pointerAngle(e, drag.c);
@@ -108,6 +184,7 @@ record.addEventListener('pointermove', (e) => {
   const now = performance.now();
   drag.samples.push({ t: now, d });
   while (drag.samples.length && now - drag.samples[0].t > 80) drag.samples.shift();
+  showPeek(drag.total);
 });
 
 function endDrag() {
@@ -121,11 +198,13 @@ function endDrag() {
   velocity = clamp(fling, -2500, 2500);
 
   if (Math.abs(total) < 4) {
-    if (clickedLabel) control('toggle');
+    hidePeek();
+    if (clickedLabel) togglePlay();
     return;
   }
-  if (total > SKIP_ANGLE || fling > SKIP_FLING) skip('next', false);
-  else if (total < -SKIP_ANGLE || fling < -SKIP_FLING) skip('prev', false);
+  if (total > SKIP_ANGLE || fling > SKIP_FLING) skip('next', { kick: false });
+  else if (total < -SKIP_ANGLE || fling < -SKIP_FLING) skip('prev', { kick: false });
+  hidePeek();
 }
 record.addEventListener('pointerup', endDrag);
 record.addEventListener('pointercancel', endDrag);
@@ -149,19 +228,85 @@ record.addEventListener('wheel', (e) => {
   }
 }, { passive: false });
 
-window.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'INPUT') return;
-  if (e.key === 'ArrowRight') skip('next');
-  else if (e.key === 'ArrowLeft') skip('prev');
-  else if (e.key === ' ') control('toggle');
+/* ---------- Tonearm: drag it across the record to seek ---------- */
+
+function armAngleAt(e) {
+  const r = deck.getBoundingClientRect();
+  const dx = e.clientX - (r.left + ARM_PIVOT.x);
+  const dy = e.clientY - (r.top + ARM_PIVOT.y);
+  return clamp(Math.atan2(-dx, dy) * 180 / Math.PI, 0, ARM_MAX);
+}
+
+function armFraction(deg) {
+  return clamp((deg - ARM_START) / (ARM_END - ARM_START), 0, 1);
+}
+
+const armHit = $('armHit');
+
+armHit.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0 || !isReady() || !player?.track || optimistic) return;
+  e.stopPropagation();
+  armHit.setPointerCapture(e.pointerId);
+  arm.classList.add('dragging');
+  armDrag = { deg: 0, fraction: trackProgress() };
+  moveArm(e);
 });
 
-deck.addEventListener('contextmenu', (e) => {
+function moveArm(e) {
+  armDrag.deg = armAngleAt(e);
+  armDrag.fraction = armFraction(armDrag.deg);
+  arm.style.transform = `rotate(${armDrag.deg}deg)`;
+  bubble.hidden = false;
+  bubble.textContent = armDrag.deg < ARM_LIFT
+    ? (player?.isPlaying ? 'Lift to pause' : 'Drop on the record to play')
+    : `${formatTime(armDrag.fraction * player.track.durationMs)} / ${formatTime(player.track.durationMs)}`;
+}
+
+armHit.addEventListener('pointermove', (e) => {
+  if (armDrag) moveArm(e);
+});
+
+function endArmDrag() {
+  if (!armDrag) return;
+  const { deg, fraction } = armDrag;
+  armDrag = null;
+  arm.classList.remove('dragging');
+  bubble.hidden = true;
+
+  if (deg < ARM_LIFT) {
+    setPlaying(false);
+  } else if (player?.track) {
+    api.control('seek', fraction * player.track.durationMs);
+    if (player.isPlaying) Sounds.play('needleDrop');
+    else setPlaying(true);
+  }
+  updateArm();
+}
+armHit.addEventListener('pointerup', endArmDrag);
+armHit.addEventListener('pointercancel', endArmDrag);
+
+/* ---------- Resize grip ---------- */
+
+const grip = $('grip');
+let resizing = false;
+grip.addEventListener('pointerdown', (e) => {
   e.preventDefault();
-  api.menu();
+  grip.setPointerCapture(e.pointerId);
+  resizing = true;
+  api.resizeStart();
 });
+grip.addEventListener('pointermove', () => {
+  if (resizing) api.resizeMove();
+});
+const endResize = () => {
+  if (!resizing) return;
+  resizing = false;
+  api.resizeEnd();
+};
+grip.addEventListener('pointerup', endResize);
+grip.addEventListener('pointercancel', endResize);
 
-/* ---------- Album art & colour ---------- */
+/* ---------- Album art, colour & vinyl ---------- */
 
 const arts = [$('artA'), $('artB')];
 let front = 0;
@@ -173,6 +318,7 @@ function setArt(url) {
   if (!url) {
     arts.forEach((img) => img.classList.remove('show'));
     deck.style.removeProperty('--accent');
+    deck.style.removeProperty('--accent2');
     return;
   }
   const back = arts[1 - front];
@@ -183,11 +329,11 @@ function setArt(url) {
     front = 1 - front;
   };
   back.src = url;
-  extractAccent(url);
+  extractColours(url);
 }
 
-// Average the album cover's colours (favouring saturated pixels) to tint the deck.
-function extractAccent(url) {
+// --accent: the cover's average colour (favouring saturated pixels). --accent2: its most vivid pixel.
+function extractColours(url) {
   const img = new Image();
   img.crossOrigin = 'anonymous';
   img.onload = () => {
@@ -199,36 +345,67 @@ function extractAccent(url) {
       ctx.drawImage(img, 0, 0, 16, 16);
       const { data } = ctx.getImageData(0, 0, 16, 16);
       let r = 0, g = 0, b = 0, total = 0;
+      let vivid = [0, 0, 0], vividScore = -1;
       for (let i = 0; i < data.length; i += 4) {
         const max = Math.max(data[i], data[i + 1], data[i + 2]);
         const min = Math.min(data[i], data[i + 1], data[i + 2]);
-        const weight = (max - min) / 255 * (max / 255) + 0.04;
+        const score = ((max - min) / 255) * (max / 255);
+        const weight = score + 0.04;
         r += data[i] * weight;
         g += data[i + 1] * weight;
         b += data[i + 2] * weight;
         total += weight;
+        if (score > vividScore) {
+          vividScore = score;
+          vivid = [data[i], data[i + 1], data[i + 2]];
+        }
       }
       deck.style.setProperty('--accent', `rgb(${r / total | 0} ${g / total | 0} ${b / total | 0})`);
+      deck.style.setProperty('--accent2', `rgb(${vivid.join(' ')})`);
     } catch {
       deck.style.removeProperty('--accent');
+      deck.style.removeProperty('--accent2');
     }
   };
   img.onerror = () => deck.style.removeProperty('--accent');
   img.src = url;
 }
 
+// Roughly 1 in 5 tracks is pressed on coloured vinyl, 1 in 10 on marbled. Same track, same record.
+function setVinyl(id) {
+  let hash = 0;
+  for (const ch of id || '') hash = (hash * 31 + ch.charCodeAt(0)) | 0;
+  const roll = id ? Math.abs(hash) % 10 : 9;
+  record.classList.toggle('vinyl-colour', roll < 2);
+  record.classList.toggle('vinyl-marble', roll === 2);
+}
+
 /* ---------- State ---------- */
+
+function renderTrack() {
+  const ready = isReady();
+  let t = player?.track ?? null;
+  let pending = false;
+  if (optimistic) {
+    if (player?.track?.id !== optimistic.fromId || Date.now() > optimistic.until) optimistic = null;
+    else if (optimistic.track) t = optimistic.track;
+    else pending = true;
+  }
+  if (drag && peek.style.opacity !== '0') return; // the peek text owns the bar while spinning
+
+  $('title').textContent = t?.name ?? (ready ? 'Nothing playing' : 'Backspin');
+  $('artist').textContent = player?.offline
+    ? 'Offline — reconnecting…'
+    : t ? t.artists : (ready ? 'Play something on Spotify' : '');
+  record.title = t?.album ? `${t.name} — ${t.album}${player?.device ? `\nPlaying on ${player.device}` : ''}` : '';
+  setArt(t?.art ?? null);
+  setVinyl(t?.id);
+  label.classList.toggle('pending', pending);
+}
 
 function setPlayer(p) {
   player = p;
-  const t = p?.track;
-  const ready = ui.phase === 'ready';
-  $('title').textContent = t?.name ?? (ready ? 'Nothing playing' : 'Backspin');
-  $('artist').textContent = p?.offline
-    ? 'Offline — reconnecting…'
-    : t ? t.artists : (ready ? 'Play something on Spotify' : '');
-  record.title = t ? `${t.name} — ${t.album}${p.device ? `\nPlaying on ${p.device}` : ''}` : '';
-  setArt(t?.art ?? null);
+  renderTrack();
   deck.classList.toggle('playing', !!p?.isPlaying);
   hint.classList.toggle('play', !p?.isPlaying);
   hint.classList.toggle('pause', !!p?.isPlaying);
@@ -240,6 +417,7 @@ function render(next) {
   $('setup').hidden = ui.phase !== 'setup';
   $('login').hidden = ui.phase !== 'login';
   $('redirect').textContent = ui.redirectUri;
+  Sounds.setEnabled(ui.settings?.sounds !== false);
 
   const loginBtn = $('loginBtn');
   loginBtn.disabled = ui.busy;

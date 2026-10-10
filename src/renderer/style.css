@@ -3,6 +3,11 @@
   inherits: true;
   initial-value: #5b5b68;
 }
+@property --accent2 {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #8a8a99;
+}
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -32,7 +37,7 @@ html, body {
     0 5px 12px rgba(0, 0, 0, .45),
     inset 0 1px 0 rgba(255, 255, 255, .09),
     inset 0 0 0 1px rgba(255, 255, 255, .05);
-  transition: --accent 1.2s ease;
+  transition: --accent 1.2s ease, --accent2 1.2s ease;
 }
 
 .led {
@@ -69,13 +74,38 @@ html, body {
   -webkit-app-region: no-drag;
   cursor: grab;
   will-change: transform;
+  --vinyl: radial-gradient(circle, #1a1a1d, #151517);
   background:
     radial-gradient(circle, transparent 0 30%, rgba(255, 255, 255, .06) 30.5% 31%, transparent 31.5%),
     radial-gradient(circle, transparent 0 95%, rgba(255, 255, 255, .07) 95.5% 96.5%, transparent 97%),
     conic-gradient(from 0deg, rgba(255, 255, 255, .025), transparent 25%, rgba(255, 255, 255, .02) 50%, transparent 75%, rgba(255, 255, 255, .025)),
-    repeating-radial-gradient(circle, #121214 0 1.2px, #1c1c1f 1.6px 2.6px);
+    repeating-radial-gradient(circle, rgba(0, 0, 0, .4) 0 1.2px, rgba(255, 255, 255, .035) 1.6px 2.6px),
+    var(--vinyl);
 }
 .record.grabbing { cursor: grabbing; }
+
+/* Some tracks get coloured or marbled vinyl, tinted from the album art. */
+.record.vinyl-colour {
+  --vinyl: radial-gradient(circle,
+    color-mix(in oklab, var(--accent) 70%, #000) 30%,
+    color-mix(in oklab, var(--accent) 88%, #000) 65%,
+    color-mix(in oklab, var(--accent) 62%, #000));
+}
+.record.vinyl-marble {
+  --vinyl:
+    radial-gradient(ellipse 30% 12% at 30% 30%, color-mix(in oklab, var(--accent2) 45%, #fff) 0 20%, transparent 100%),
+    radial-gradient(ellipse 14% 34% at 76% 58%, color-mix(in oklab, var(--accent) 40%, #fff) 0 15%, transparent 100%),
+    radial-gradient(ellipse 22% 10% at 40% 82%, color-mix(in oklab, var(--accent2) 55%, #fff) 0 10%, transparent 100%),
+    radial-gradient(circle at 26% 64%, color-mix(in oklab, var(--accent2) 85%, #000) 0 10%, transparent 30%),
+    radial-gradient(circle at 70% 26%, color-mix(in oklab, var(--accent) 90%, #000) 0 12%, transparent 32%),
+    conic-gradient(from 40deg,
+      color-mix(in oklab, var(--accent) 70%, #000),
+      color-mix(in oklab, var(--accent2) 75%, #000) 22%,
+      color-mix(in oklab, var(--accent) 55%, #000) 41%,
+      color-mix(in oklab, var(--accent2) 65%, #000) 63%,
+      color-mix(in oklab, var(--accent) 80%, #000) 82%,
+      color-mix(in oklab, var(--accent) 70%, #000));
+}
 
 .label {
   position: absolute;
@@ -108,6 +138,10 @@ html, body {
   -webkit-user-drag: none;
 }
 .art.show { opacity: 1; }
+.label .art { transition: opacity .7s ease, filter .4s; }
+.label .peek { transition: opacity .15s linear; }
+/* Skipped, but we don't know the new cover yet. */
+.label.pending .art.show { opacity: .3; filter: blur(1.5px); }
 
 .spindle {
   position: absolute;
@@ -176,12 +210,16 @@ html, body {
   width: 40px;
   height: 205px;
   pointer-events: none;
+  -webkit-app-region: no-drag;
   transform-origin: 20px 34px;
   transform: rotate(0deg);
   transition: transform 1.4s cubic-bezier(.3, .7, .3, 1);
   filter: drop-shadow(3px 5px 3px rgba(0, 0, 0, .5));
 }
 .arm svg { display: block; }
+.arm-hit { pointer-events: stroke; cursor: grab; }
+.arm.dragging { transition: none; filter: drop-shadow(6px 10px 5px rgba(0, 0, 0, .45)); }
+.arm.dragging .arm-hit { cursor: grabbing; }
 
 /* ---------- Bottom bar ---------- */
 
@@ -198,9 +236,9 @@ html, body {
 
 .progress {
   position: absolute;
-  left: 42px;
-  right: 42px;
-  top: 2px;
+  left: 4px;
+  right: 4px;
+  top: 0;
   height: 2px;
   border-radius: 1px;
   background: rgba(255, 255, 255, .1);
@@ -216,8 +254,7 @@ html, body {
 .meta {
   flex: 1;
   min-width: 0;
-  padding-top: 6px;
-  text-align: center;
+  padding: 6px 0 0 4px;
 }
 .title, .artist {
   overflow: hidden;
@@ -230,8 +267,9 @@ html, body {
 .ctl {
   -webkit-app-region: no-drag;
   flex: none;
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
+  margin-top: 6px;
   border: 0;
   border-radius: 50%;
   display: grid;
@@ -243,7 +281,48 @@ html, body {
 }
 .ctl:hover { background: rgba(255, 255, 255, .15); }
 .ctl:active { transform: scale(.9); }
-.ctl svg { width: 13px; height: 13px; fill: currentColor; }
+.ctl svg { width: 12px; height: 12px; fill: currentColor; }
+.ctl.main {
+  width: 36px;
+  height: 36px;
+  background: color-mix(in oklab, var(--accent) 45%, #e8e8ee);
+  color: #141416;
+}
+.ctl.main:hover { background: color-mix(in oklab, var(--accent) 30%, #fff); }
+.ctl.main svg { width: 14px; height: 14px; }
+.ctl.main .icon-pause, .deck.playing .ctl.main .icon-play { display: none; }
+.deck.playing .ctl.main .icon-pause { display: block; }
+
+/* ---------- Resize grip & seek bubble ---------- */
+
+.grip {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 14px;
+  height: 14px;
+  -webkit-app-region: no-drag;
+  cursor: nwse-resize;
+  opacity: 0;
+  transition: opacity .2s;
+  background: linear-gradient(135deg,
+    transparent 0 45%, rgba(255, 255, 255, .35) 45% 52%,
+    transparent 52% 65%, rgba(255, 255, 255, .35) 65% 72%, transparent 72%);
+}
+.deck:hover .grip { opacity: 1; }
+
+.bubble {
+  position: absolute;
+  left: 50%;
+  top: 10px;
+  padding: 4px 10px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, .8);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
 
 /* ---------- Toast ---------- */
 

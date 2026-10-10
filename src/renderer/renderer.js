@@ -14,7 +14,7 @@ const PLAY_SPEED = 200; // degrees per second ≈ 33⅓ rpm
 const LABEL_RADIUS = 0.28; // label radius as a fraction of the record's diameter
 const ARM_PIVOT = { x: 248, y: 34 }; // tonearm pivot, in deck coordinates
 const ARM_START = 9; // tonearm angle at the outer edge (start of a track)…
-const ARM_END = 23; // …and near the label (end of a track)
+const ARM_END = 24; // …and right by the label (end of a track)
 const ARM_LIFT = 5; // drop the arm below this angle and playback pauses
 const ARM_MAX = 27;
 const SKIP_ANGLE = 80; // how far you have to spin the record to skip
@@ -72,8 +72,10 @@ function tick(now) {
 }
 requestAnimationFrame(tick);
 
+// The tonearm tracks the song: it starts at the outer edge and creeps in towards the label.
+let armHoldUntil = 0;
 function updateArm() {
-  if (armDrag) return;
+  if (armDrag || Date.now() < armHoldUntil) return;
   const deg = player?.isPlaying ? ARM_START + (ARM_END - ARM_START) * trackProgress() : 0;
   arm.style.transform = `rotate(${deg}deg)`;
 }
@@ -97,7 +99,7 @@ function skip(direction, { kick = true } = {}) {
 
 function setPlaying(play) {
   if (!isReady() || !!player?.isPlaying === play) return;
-  Sounds.play(play ? 'needleDrop' : 'powerDown');
+  Sounds.play(play ? 'needleOn' : 'needleOff');
   api.control(play ? 'play' : 'pause');
 }
 
@@ -273,14 +275,18 @@ function endArmDrag() {
   arm.classList.remove('dragging');
   bubble.hidden = true;
 
+  // Leave the arm exactly where it was put down (or swing it onto its rest) instead of
+  // jumping around while Spotify catches up.
+  armHoldUntil = Date.now() + 1200;
   if (deg < ARM_LIFT) {
+    arm.style.transform = 'rotate(0deg)';
     setPlaying(false);
   } else if (player?.track) {
+    arm.style.transform = `rotate(${deg}deg)`;
     api.control('seek', fraction * player.track.durationMs);
-    if (player.isPlaying) Sounds.play('needleDrop');
+    if (player.isPlaying) Sounds.play('needleOn');
     else setPlaying(true);
   }
-  updateArm();
 }
 armHit.addEventListener('pointerup', endArmDrag);
 armHit.addEventListener('pointercancel', endArmDrag);

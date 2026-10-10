@@ -38,10 +38,57 @@ window.Sounds = (() => {
     src.start(t);
   }
 
-  // Needle landing: a soft thump followed by a second of crackle.
-  function needleDrop() {
+  // The classic needle-dragged-across-the-grooves "rrrrip".
+  // direction -1 = needle coming off (pitch falls), 1 = needle going on (pitch rises).
+  function needleScratch(direction, t, length = 0.38) {
     const c = audio();
-    const t = c.currentTime;
+    const [f0, f1] = direction < 0 ? [3200, 550] : [650, 2800];
+    const band = c.createBiquadFilter();
+    band.type = 'bandpass';
+    band.Q.value = 2.5;
+    band.frequency.setValueAtTime(f0, t);
+    band.frequency.exponentialRampToValueAtTime(f1, t + length);
+
+    // Chop the noise with a square wave so it rasps like grooves passing under the needle.
+    const rasp = c.createGain();
+    rasp.gain.value = 0.5;
+    const grooves = c.createOscillator();
+    grooves.type = 'square';
+    grooves.frequency.setValueAtTime(direction < 0 ? 75 : 28, t);
+    grooves.frequency.linearRampToValueAtTime(direction < 0 ? 22 : 75, t + length);
+    const depth = c.createGain();
+    depth.gain.value = 0.5;
+    grooves.connect(depth).connect(rasp.gain);
+
+    // A little pitched "zip" underneath.
+    const zip = c.createOscillator();
+    zip.type = 'sawtooth';
+    zip.frequency.setValueAtTime(direction < 0 ? 720 : 160, t);
+    zip.frequency.exponentialRampToValueAtTime(direction < 0 ? 110 : 680, t + length);
+    const zipLevel = c.createGain();
+    zipLevel.gain.value = 0.1;
+
+    const src = noise(c, length + 0.05);
+    const out = envelope(c, t, 0.6, 0.01, length);
+    src.connect(band);
+    zip.connect(zipLevel).connect(band);
+    band.connect(rasp).connect(out).connect(c.destination);
+    for (const node of [src, grooves, zip]) {
+      node.start(t);
+      node.stop(t + length + 0.05);
+    }
+  }
+
+  // Needle off the record (pause).
+  function needleOff() {
+    needleScratch(-1, audio().currentTime);
+  }
+
+  // Needle onto the record (play): scratch in, a soft thump, then a second of crackle.
+  function needleOn() {
+    const c = audio();
+    needleScratch(1, c.currentTime, 0.28);
+    const t = c.currentTime + 0.26;
 
     const thump = c.createOscillator();
     thump.frequency.setValueAtTime(110, t);
@@ -59,23 +106,7 @@ window.Sounds = (() => {
     crackle.start(t + 0.04);
   }
 
-  // Stop button: a low "power down" as the platter brakes.
-  function powerDown() {
-    const c = audio();
-    const t = c.currentTime;
-    const osc = c.createOscillator();
-    osc.type = 'triangle';
-    osc.frequency.setValueAtTime(240, t);
-    osc.frequency.exponentialRampToValueAtTime(45, t + 0.4);
-    const low = c.createBiquadFilter();
-    low.type = 'lowpass';
-    low.frequency.value = 900;
-    osc.connect(low).connect(envelope(c, t, 0.18, 0.01, 0.42)).connect(c.destination);
-    osc.start(t);
-    osc.stop(t + 0.5);
-  }
-
-  const effects = { scratch, needleDrop, powerDown };
+  const effects = { scratch, needleOn, needleOff };
 
   return {
     play(name, ...args) {

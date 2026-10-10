@@ -5,14 +5,18 @@ const path = require('path');
 const store = require('./store');
 const auth = require('./auth');
 const spotify = require('./spotify');
+const updater = require('./updater');
 
 const isMac = process.platform === 'darwin';
 const ASSETS = path.join(__dirname, '..', '..', 'assets');
-const WIN_SIZE = { width: 300, height: 336 };
+const BASE_SIZE = { width: 300, height: 336 }; // the UI is designed at this size, then zoomed
+const MIN_SCALE = 0.65;
+const MAX_SCALE = 2;
+// Hotkeys go through the turntable UI so they get the same animation + sounds as clicks.
 const SHORTCUTS = {
-  'CommandOrControl+Alt+Right': () => spotify.control('next'),
-  'CommandOrControl+Alt+Left': () => spotify.control('prev'),
-  'CommandOrControl+Alt+Down': () => spotify.control('toggle'),
+  'CommandOrControl+Alt+Right': () => remote('next'),
+  'CommandOrControl+Alt+Left': () => remote('prev'),
+  'CommandOrControl+Alt+Down': () => remote('toggle'),
   'CommandOrControl+Alt+Up': () => toggleWindow(),
 };
 
@@ -21,10 +25,33 @@ if (!app.requestSingleInstanceLock()) app.exit(0);
 let win = null;
 let tray = null;
 let quitting = false;
-let ui = { phase: 'setup', busy: false, error: null, player: null, redirectUri: auth.REDIRECT_URI };
+let scale = clampScale(store.get('scale') ?? 1);
+let resizeStart = null;
+let savePositionTimer = null;
+let update = null;
+let ui = {
+  phase: 'setup',
+  busy: false,
+  error: null,
+  player: null,
+  redirectUri: auth.REDIRECT_URI,
+  settings: { sounds: store.get('sounds') !== false },
+};
+
+function clampScale(s) {
+  return Math.min(MAX_SCALE, Math.max(MIN_SCALE, Number(s) || 1));
+}
+
+function scaledSize() {
+  return { width: Math.round(BASE_SIZE.width * scale), height: Math.round(BASE_SIZE.height * scale) };
+}
 
 function send(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+}
+
+function remote(action) {
+  send('remote', action);
 }
 
 function setUi(patch) {
@@ -43,25 +70,31 @@ function syncPhase() {
   }
 }
 
-function initialPosition() {
+function initialPosition({ width, height }) {
   const saved = store.get('position');
   if (saved) {
-    const cx = saved.x + WIN_SIZE.width / 2;
-    const cy = saved.y + WIN_SIZE.height / 2;
+    const cx = saved.x + width / 2;
+    const cy = saved.y + height / 2;
     const onScreen = screen.getAllDisplays().some(({ workArea: a }) =>
       cx >= a.x && cx <= a.x + a.width && cy >= a.y && cy <= a.y + a.height);
     if (onScreen) return saved;
   }
   const a = screen.getPrimaryDisplay().workArea;
-  return { x: a.x + a.width - WIN_SIZE.width - 24, y: a.y + a.height - WIN_SIZE.height - 24 };
+  return { x: a.x + a.width - width - 24, y: a.y + a.height - height - 24 };
+}
+
+function applyScale(next) {
+  scale = clampScale(next);
+  const { x, y } = win.getBounds();
+  win.setBounds({ x, y, ...scaledSize() });
+  win.webContents.setZoomFactor(scale);
 }
 
 function createWindow() {
-  const { x, y } = initialPosition();
+  const size = scaledSize();
   win = new BrowserWindow({
-    ...WIN_SIZE,
-    x,
-    y,
+    ...size,
+    ...initialPosition(size),
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
@@ -78,6 +111,7 @@ function createWindow() {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      autoplayPolicy: 'no-user-gesture-required', // sound effects from global hotkeys
     },
   });
 
@@ -85,11 +119,16 @@ function createWindow() {
   if (isMac) win.setVisibleOnAllWorkspaces(true);
 
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  win.webContents.on('did-finish-load', () => win.webContents.setZoomFactor(scale));
   win.once('ready-to-show', () => win.show());
 
+  // Windows fires 'moved' continuously while dragging, so only save once things settle.
   win.on('moved', () => {
-    const [px, py] = win.getPosition();
-    store.set('position', { x: px, y: py });
+    clearTimeout(savePositionTimer);
+    savePositionTimer = setTimeout(() => {
+      const [x, y] = win.getPosition();
+      store.set('position', { x, y });
+    }, 400);
   });
   win.on('show', () => spotify.setVisible(true));
   win.on('hide', () => spotify.setVisible(false));
@@ -104,7 +143,6 @@ function createWindow() {
     e.preventDefault();
     buildMenu().popup({ window: win });
   });
-  // Links (e.g. the developer dashboard) open in the real browser, never inside the widget.
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e) => e.preventDefault());
 }
@@ -123,12 +161,22 @@ function toggleWindow() {
 
 function buildMenu() {
   const ready = ui.phase === 'ready';
-  return Menu.buildFromTemplate([
+  const items = [];
+  if (update) {
+    items.push(
+      {
+        label: update.ready ? `Restart to Update (v${update.version})` : `Download Update (v${update.version})…`,
+        click: () => updater.install(update),
+      },
+      { type: 'separator' },
+    );
+  }
+  items.push(
     { label: win?.isVisible() ? 'Hide Backspin' : 'Show Backspin', click: toggleWindow },
     { type: 'separator' },
-    { label: 'Play / Pause', enabled: ready, click: () => spotify.control('toggle') },
-    { label: 'Next Track', enabled: ready, click: () => spotify.control('next') },
-    { label: 'Previous Track', enabled: ready, click: () => spotify.control('prev') },
+    { label: 'Play / Pause', enabled: ready, click: () => remote('toggle') },
+    { label: 'Next Track', enabled: ready, click: () => remote('next') },
+    { label: 'Previous Track', enabled: ready, click: () => remote('prev') },
     { type: 'separator' },
     {
       label: 'Always on Top',
@@ -140,10 +188,24 @@ function buildMenu() {
       },
     },
     {
+      label: 'Sound Effects',
+      type: 'checkbox',
+      checked: ui.settings.sounds,
+      click: (item) => {
+        store.set('sounds', item.checked);
+        setUi({ settings: { ...ui.settings, sounds: item.checked } });
+      },
+    },
+    {
       label: 'Launch at Login',
       type: 'checkbox',
       checked: app.getLoginItemSettings().openAtLogin,
       click: (item) => app.setLoginItemSettings({ openAtLogin: item.checked }),
+    },
+    {
+      label: 'Reset Size',
+      enabled: scale !== 1,
+      click: () => { applyScale(1); store.set('scale', 1); },
     },
     { type: 'separator' },
     {
@@ -156,8 +218,9 @@ function buildMenu() {
       click: () => { resetClientId(); showWindow(); },
     },
     { type: 'separator' },
-    { label: 'Quit Backspin', click: () => app.quit() },
-  ]);
+    { label: `Quit Backspin`, click: () => app.quit() },
+  );
+  return Menu.buildFromTemplate(items);
 }
 
 function resetClientId() {
@@ -217,10 +280,28 @@ function registerIpc() {
   });
   ipcMain.on('cancel-login', () => auth.cancelLogin());
   ipcMain.on('reset-client-id', resetClientId);
-  ipcMain.on('control', (_e, action) => spotify.control(action));
+  ipcMain.on('control', (_e, action, arg) => spotify.control(action, arg));
   ipcMain.on('open-dashboard', () => shell.openExternal('https://developer.spotify.com/dashboard'));
   ipcMain.on('copy-redirect', () => clipboard.writeText(auth.REDIRECT_URI));
   ipcMain.on('menu', () => buildMenu().popup({ window: win }));
+
+  // Resize grip: track the real cursor here, so page zoom doesn't skew the maths.
+  ipcMain.on('resize-start', () => {
+    resizeStart = { width: win.getBounds().width, cursor: screen.getCursorScreenPoint() };
+  });
+  ipcMain.on('resize-move', () => {
+    if (!resizeStart) return;
+    const c = screen.getCursorScreenPoint();
+    const grow = Math.max(
+      c.x - resizeStart.cursor.x,
+      (c.y - resizeStart.cursor.y) * (BASE_SIZE.width / BASE_SIZE.height),
+    );
+    applyScale((resizeStart.width + grow) / BASE_SIZE.width);
+  });
+  ipcMain.on('resize-end', () => {
+    resizeStart = null;
+    store.set('scale', scale);
+  });
 }
 
 app.on('second-instance', showWindow);
@@ -240,4 +321,10 @@ app.whenReady().then(() => {
   createTray();
   registerShortcuts();
   syncPhase();
+  updater.start((available) => {
+    update = available;
+    send('toast', available.ready
+      ? `Update v${available.version} ready — restart from the menu`
+      : `Backspin v${available.version} is out — see the menu`);
+  });
 });

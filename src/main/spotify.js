@@ -12,6 +12,12 @@ let pollSoon = false;
 let pausedUntil = 0; // set when Spotify rate-limits us
 let lastPlayer = null;
 
+// For peeking at the previous/next cover: tracks seen this session, and the head of the queue.
+let history = [];
+let upcoming = { forId: null, next: null };
+let queueAttemptAt = 0;
+let queueInflight = false;
+
 function init(h) {
   handlers = { ...handlers, ...h };
 }
@@ -39,32 +45,75 @@ function pickImage(images) {
   return (sorted.find((img) => (img.width || 0) >= 300) || sorted.at(-1)).url;
 }
 
+function toTrack(item) {
+  return {
+    id: item.id || item.uri,
+    name: item.name,
+    artists: item.artists?.map((a) => a.name).join(', ') ?? item.show?.name ?? '',
+    album: item.album?.name ?? item.show?.name ?? '',
+    art: pickImage(item.album?.images || item.images || item.show?.images),
+    durationMs: item.duration_ms || 0,
+  };
+}
+
+const slim = ({ id, name, artists, art }) => ({ id, name, artists, art });
+
 function idle(extra = {}) {
   return { isPlaying: false, track: null, progressMs: 0, receivedAt: Date.now(), device: null, ...extra };
 }
 
 function toPlayer(data) {
-  const item = data.item;
-  if (!item) return idle({ isPlaying: !!data.is_playing, device: data.device?.name ?? null });
+  if (!data.item) return idle({ isPlaying: !!data.is_playing, device: data.device?.name ?? null });
   return {
     isPlaying: !!data.is_playing,
     progressMs: data.progress_ms ?? 0,
     receivedAt: Date.now(),
     device: data.device?.name ?? null,
-    track: {
-      id: item.id || item.uri,
-      name: item.name,
-      artists: item.artists?.map((a) => a.name).join(', ') ?? item.show?.name ?? '',
-      album: item.album?.name ?? item.show?.name ?? '',
-      art: pickImage(item.album?.images || item.images || item.show?.images),
-      durationMs: item.duration_ms || 0,
-    },
+    track: toTrack(data.item),
+  };
+}
+
+function decorate(player) {
+  const id = player.track?.id;
+  return {
+    ...player,
+    prev: history.at(-1) ?? null,
+    next: id && upcoming.forId === id ? upcoming.next : null,
   };
 }
 
 function emit(player) {
+  const before = lastPlayer?.track;
+  if (before && player.track && before.id !== player.track.id) {
+    if (history.at(-1)?.id === player.track.id) history.pop();
+    else {
+      history.push(slim(before));
+      if (history.length > 50) history.shift();
+    }
+  }
   lastPlayer = player;
-  handlers.onPlayer(player);
+  handlers.onPlayer(decorate(player));
+
+  const id = player.track?.id;
+  if (id && Date.now() - queueAttemptAt > (upcoming.forId === id ? 30_000 : 3_000)) refreshQueue(id);
+}
+
+async function refreshQueue(id) {
+  if (queueInflight) return;
+  queueInflight = true;
+  queueAttemptAt = Date.now();
+  try {
+    const res = await request('GET', '/me/player/queue');
+    if (res.ok) {
+      const item = (await res.json()).queue?.[0];
+      upcoming = { forId: id, next: item ? slim(toTrack(item)) : null };
+      if (lastPlayer?.track?.id === id) handlers.onPlayer(decorate(lastPlayer));
+    }
+  } catch {
+    // Peeking is a nice-to-have; ignore failures.
+  } finally {
+    queueInflight = false;
+  }
 }
 
 function interval() {
@@ -115,25 +164,30 @@ function explain(status, body) {
 }
 
 const COMMANDS = {
-  next: ['POST', '/me/player/next'],
-  prev: ['POST', '/me/player/previous'],
-  play: ['PUT', '/me/player/play'],
-  pause: ['PUT', '/me/player/pause'],
+  next: () => ['POST', '/me/player/next'],
+  prev: () => ['POST', '/me/player/previous'],
+  play: () => ['PUT', '/me/player/play'],
+  pause: () => ['PUT', '/me/player/pause'],
+  seek: (ms) => ['PUT', `/me/player/seek?position_ms=${Math.max(0, Math.round(ms))}`],
 };
 
-async function control(action) {
+async function control(action, arg) {
   if (!running) return;
   if (action === 'toggle') action = lastPlayer?.isPlaying ? 'pause' : 'play';
   const command = COMMANDS[action];
   if (!command) return;
 
-  // Show play/pause instantly; the next poll confirms it.
-  if (lastPlayer?.track && (action === 'play' || action === 'pause')) {
-    emit({ ...lastPlayer, isPlaying: action === 'play', progressMs: currentProgress(lastPlayer), receivedAt: Date.now() });
+  // Reflect play/pause/seek instantly; the next poll confirms it.
+  if (lastPlayer?.track) {
+    if (action === 'play' || action === 'pause') {
+      emit({ ...lastPlayer, isPlaying: action === 'play', progressMs: currentProgress(lastPlayer), receivedAt: Date.now() });
+    } else if (action === 'seek') {
+      emit({ ...lastPlayer, progressMs: arg, receivedAt: Date.now() });
+    }
   }
 
   try {
-    const res = await request(...command);
+    const res = await request(...command(arg));
     if (!res.ok) handlers.onToast(explain(res.status, await res.json().catch(() => null)));
   } catch (err) {
     if (err instanceof auth.LoggedOutError) {
@@ -157,6 +211,8 @@ function stop() {
   running = false;
   clearTimeout(timer);
   lastPlayer = null;
+  history = [];
+  upcoming = { forId: null, next: null };
 }
 
 function setVisible(v) {

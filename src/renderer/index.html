@@ -13,10 +13,11 @@
 
     <div class="platter">
       <div id="record" class="record">
-        <div class="label">
+        <div id="label" class="label">
           <div class="label-blank"><span>33⅓</span></div>
           <img id="artA" class="art" alt="">
           <img id="artB" class="art" alt="">
+          <img id="peek" class="art peek" alt="">
         </div>
         <div class="spindle"></div>
       </div>
@@ -42,23 +43,31 @@
               stroke-linecap="round" stroke-linejoin="round"/>
         <rect x="7" y="174" width="14" height="22" rx="2.5" transform="rotate(18 14 185)"
               fill="#25252a" stroke="#5a5a62"/>
+        <path id="armHit" class="arm-hit" d="M20 60 L20 160 L13 192" stroke="transparent"
+              stroke-width="18" fill="none" stroke-linecap="round"/>
       </svg>
     </div>
 
     <footer class="bar">
       <div class="progress"><div id="progress" class="progress-fill"></div></div>
-      <button id="prev" class="ctl" aria-label="Previous track">
-        <svg viewBox="0 0 16 16"><path d="M3 2h2v12H3zM14 2v12L6 8z"/></svg>
-      </button>
       <div class="meta">
         <div id="title" class="title">Backspin</div>
         <div id="artist" class="artist"></div>
       </div>
+      <button id="prev" class="ctl" aria-label="Previous track">
+        <svg viewBox="0 0 16 16"><path d="M3 2h2v12H3zM14 2v12L6 8z"/></svg>
+      </button>
+      <button id="playPause" class="ctl main" aria-label="Play or pause">
+        <svg class="icon-play" viewBox="0 0 16 16"><path d="M4 2l10 6-10 6z"/></svg>
+        <svg class="icon-pause" viewBox="0 0 16 16"><path d="M3 2h4v12H3zM9 2h4v12H9z"/></svg>
+      </button>
       <button id="next" class="ctl" aria-label="Next track">
         <svg viewBox="0 0 16 16"><path d="M11 2h2v12h-2zM2 2v12l8-6z"/></svg>
       </button>
     </footer>
 
+    <div id="grip" class="grip" title="Drag to resize"></div>
+    <div id="bubble" class="bubble" hidden></div>
     <div id="toast" class="toast" hidden></div>
 
     <section id="setup" class="panel" hidden>
@@ -86,6 +95,7 @@
       <button id="changeId" class="link subtle">Use a different Client ID</button>
     </section>
   </main>
+  <script src="sounds.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

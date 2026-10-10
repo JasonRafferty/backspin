@@ -105,6 +105,7 @@ function createWindow() {
     fullscreenable: false,
     skipTaskbar: true,
     show: false,
+    acceptFirstMouse: true, // macOS: first click works even when the widget isn't focused
     title: 'Backspin',
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'preload.js'),

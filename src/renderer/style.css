@@ -234,9 +234,16 @@ html, body {
   width: 18px;
   height: 100px;
   -webkit-app-region: no-drag;
-  cursor: ns-resize;
+  cursor: grab;
   transition: opacity .3s;
 }
+/* Invisible grab area: out to the deck's edge and down to the arm rest, clear of the tonearm. */
+.fader::before {
+  content: '';
+  position: absolute;
+  inset: -10px -2px -6px -3px;
+}
+.fader.dragging { cursor: grabbing; }
 .fader.off { opacity: .35; cursor: default; }
 
 .fader-slot {

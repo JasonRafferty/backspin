@@ -18,6 +18,11 @@ let upcoming = { forId: null, next: null };
 let queueAttemptAt = 0;
 let queueInflight = false;
 
+// Volume changes go out one at a time, newest value last, or Spotify can apply them out of order.
+let volumeWanted = null;
+let volumeBusy = false;
+let volumeSettleUntil = 0; // until then, polls still report the old volume
+
 function init(h) {
   handlers = { ...handlers, ...h };
 }
@@ -59,16 +64,24 @@ function toTrack(item) {
 const slim = ({ id, name, artists, art }) => ({ id, name, artists, art });
 
 function idle(extra = {}) {
-  return { isPlaying: false, track: null, progressMs: 0, receivedAt: Date.now(), device: null, ...extra };
+  return { isPlaying: false, track: null, progressMs: 0, receivedAt: Date.now(), device: null, volume: null, ...extra };
+}
+
+function toDevice(device) {
+  return {
+    device: device?.name ?? null,
+    // null when there's no device or it won't let us change its volume (e.g. most phones)
+    volume: device && device.supports_volume !== false ? device.volume_percent ?? null : null,
+  };
 }
 
 function toPlayer(data) {
-  if (!data.item) return idle({ isPlaying: !!data.is_playing, device: data.device?.name ?? null });
+  if (!data.item) return idle({ isPlaying: !!data.is_playing, ...toDevice(data.device) });
   return {
     isPlaying: !!data.is_playing,
     progressMs: data.progress_ms ?? 0,
     receivedAt: Date.now(),
-    device: data.device?.name ?? null,
+    ...toDevice(data.device),
     track: toTrack(data.item),
   };
 }
@@ -136,7 +149,7 @@ async function poll() {
   try {
     const res = await request('GET', '/me/player?additional_types=track,episode');
     if (res.status === 204 || res.status === 202) emit(idle());
-    else if (res.ok) emit(toPlayer(await res.json()));
+    else if (res.ok) emit(keepVolume(toPlayer(await res.json())));
     else if (res.status !== 429) console.warn('Spotify poll failed:', res.status);
   } catch (err) {
     inflight = false;
@@ -151,6 +164,11 @@ async function poll() {
   if (pollSoon) { pollSoon = false; schedule(300); } else schedule();
 }
 
+function keepVolume(player) {
+  if (!lastPlayer || (!volumeBusy && Date.now() > volumeSettleUntil)) return player;
+  return { ...player, volume: lastPlayer.volume };
+}
+
 function currentProgress(p) {
   return p.progressMs + (p.isPlaying ? Date.now() - p.receivedAt : 0);
 }
@@ -159,6 +177,7 @@ function explain(status, body) {
   const reason = body?.error?.reason;
   if (status === 404 || reason === 'NO_ACTIVE_DEVICE') return 'No active device — start Spotify somewhere first';
   if (reason === 'PREMIUM_REQUIRED') return 'Spotify Premium is needed for controls';
+  if (reason === 'VOLUME_CONTROL_DISALLOW') return 'Volume can’t be changed on this device';
   if (status === 429) return 'Spotify says slow down — try again in a sec';
   return body?.error?.message || `Spotify error (${status})`;
 }
@@ -169,6 +188,7 @@ const COMMANDS = {
   play: () => ['PUT', '/me/player/play'],
   pause: () => ['PUT', '/me/player/pause'],
   seek: (ms) => ['PUT', `/me/player/seek?position_ms=${Math.max(0, Math.round(ms))}`],
+  volume: (pct) => ['PUT', `/me/player/volume?volume_percent=${Math.min(100, Math.max(0, Math.round(pct)))}`],
 };
 
 async function control(action, arg) {
@@ -176,6 +196,13 @@ async function control(action, arg) {
   if (action === 'toggle') action = lastPlayer?.isPlaying ? 'pause' : 'play';
   const command = COMMANDS[action];
   if (!command) return;
+
+  if (action === 'volume') {
+    volumeWanted = arg;
+    if (lastPlayer) emit({ ...lastPlayer, volume: Math.round(arg) });
+    drainVolume();
+    return;
+  }
 
   // Reflect play/pause/seek instantly; the next poll confirms it.
   if (lastPlayer?.track) {
@@ -186,19 +213,37 @@ async function control(action, arg) {
     }
   }
 
+  if (!(await send(command(arg)))) return;
+  if (inflight) pollSoon = true;
+  else schedule(350);
+}
+
+async function drainVolume() {
+  if (volumeBusy) return;
+  volumeBusy = true;
+  while (volumeWanted != null && running) {
+    const pct = volumeWanted;
+    volumeWanted = null;
+    if (!(await send(COMMANDS.volume(pct)))) break;
+  }
+  volumeBusy = false;
+  volumeSettleUntil = Date.now() + 1500;
+}
+
+// Returns false if we got logged out.
+async function send(command) {
   try {
-    const res = await request(...command(arg));
+    const res = await request(...command);
     if (!res.ok) handlers.onToast(explain(res.status, await res.json().catch(() => null)));
   } catch (err) {
     if (err instanceof auth.LoggedOutError) {
       stop();
       handlers.onLoggedOut();
-      return;
+      return false;
     }
     handlers.onToast('Can’t reach Spotify');
   }
-  if (inflight) pollSoon = true;
-  else schedule(350);
+  return true;
 }
 
 function start() {

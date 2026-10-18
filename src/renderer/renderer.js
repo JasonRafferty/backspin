@@ -9,6 +9,7 @@ const hint = $('hint');
 const progress = $('progress');
 const peek = $('peek');
 const bubble = $('bubble');
+const fader = $('fader');
 
 const PLAY_SPEED = 200; // degrees per second ≈ 33⅓ rpm
 const LABEL_RADIUS = 0.28; // label radius as a fraction of the record's diameter
@@ -21,6 +22,8 @@ const SKIP_ANGLE = 80; // how far you have to spin the record to skip
 const SKIP_FLING = 900; // or how fast you have to flick it (deg/s)
 const PEEK_FROM = 12; // degrees of spin before the next cover starts to show
 const OPTIMISTIC_MS = 3000; // how long to trust a skip before Spotify confirms it
+const VOLUME_SEND_MS = 200; // send volume to Spotify at most this often while it's moving
+const VOLUME_STEP = 5; // percent per scroll notch
 
 const isMac = navigator.userAgent.includes('Mac');
 const mod = isMac ? '⌘⌥' : 'Ctrl+Alt+';
@@ -308,6 +311,89 @@ function endArmDrag() {
 }
 wireDrag(armHit, moveArm, endArmDrag);
 
+/* ---------- Volume fader: drag the cap or scroll over it (up = louder) ---------- */
+
+let volume = null; // what the fader shows, 0–100, or null when volume can't be changed
+let faderDrag = false;
+let volumeHoldUntil = 0; // ignore polled volume briefly so the cap doesn't jump back
+let volumeSentAt = 0;
+let volumeTimer = null;
+let bubbleTimer = null;
+
+function showVolume(v) {
+  volume = v;
+  fader.classList.toggle('off', v == null);
+  if (v != null) fader.style.setProperty('--vol', String(v / 100));
+}
+
+function syncVolume() {
+  if (faderDrag || Date.now() < volumeHoldUntil) return;
+  showVolume(isReady() ? player?.volume ?? null : null);
+}
+
+function volumeBubble(text, linger) {
+  clearTimeout(bubbleTimer);
+  bubble.hidden = false;
+  bubble.textContent = text;
+  if (linger) bubbleTimer = setTimeout(() => { bubble.hidden = true; }, linger);
+}
+
+// Throttled while moving, and always sends the final value.
+function setVolume(v, { linger } = {}) {
+  showVolume(Math.round(clamp(v, 0, 100)));
+  volumeBubble(`Volume ${volume}%`, linger);
+  volumeHoldUntil = Date.now() + 2000;
+  clearTimeout(volumeTimer);
+  const wait = volumeSentAt + VOLUME_SEND_MS - Date.now();
+  const send = () => {
+    volumeSentAt = Date.now();
+    api.control('volume', volume);
+  };
+  if (wait <= 0) send();
+  else volumeTimer = setTimeout(send, wait);
+}
+
+function volumeAt(e) {
+  const r = fader.getBoundingClientRect();
+  const cap = r.height * 0.08; // the cap's height; its middle follows the pointer
+  return (1 - (e.clientY - r.top - cap / 2) / (r.height - cap)) * 100;
+}
+
+function cantChangeVolume() {
+  if (isReady() && player) volumeBubble('Volume can’t be changed on this device', 1500);
+}
+
+fader.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  if (volume == null) return cantChangeVolume();
+  hold(fader, e);
+  faderDrag = true;
+  fader.classList.add('dragging');
+  setVolume(volumeAt(e));
+});
+
+function endFaderDrag() {
+  if (!faderDrag) return;
+  faderDrag = false;
+  release();
+  fader.classList.remove('dragging');
+  clearTimeout(bubbleTimer);
+  bubbleTimer = setTimeout(() => { bubble.hidden = true; }, 600);
+}
+wireDrag(fader, (e) => faderDrag && setVolume(volumeAt(e)), endFaderDrag);
+
+// A mouse wheel notch is ~100px of deltaY; trackpads send lots of small deltas.
+let faderWheel = 0;
+fader.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  if (volume == null) return cantChangeVolume();
+  faderWheel += e.deltaY;
+  const notches = Math.trunc(faderWheel / 100);
+  if (!notches) return;
+  faderWheel -= notches * 100;
+  setVolume(volume - notches * VOLUME_STEP, { linger: 900 });
+}, { passive: false });
+
 /* ---------- Resize grip ---------- */
 
 const grip = $('grip');
@@ -430,6 +516,7 @@ function setPlayer(p) {
   hint.classList.toggle('play', !p?.isPlaying);
   hint.classList.toggle('pause', !!p?.isPlaying);
   updateArm();
+  syncVolume();
 }
 
 function render(next) {

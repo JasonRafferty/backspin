@@ -8,8 +8,13 @@ const spotify = require('./spotify');
 const updater = require('./updater');
 
 const isMac = process.platform === 'darwin';
+// Linux compositors (e.g. WSLg) draw a faint box and shadow around the transparent margin,
+// so there the window is cropped to the turntable body with square corners.
+const isLinux = process.platform === 'linux';
 const ASSETS = path.join(__dirname, '..', '..', 'assets');
-const BASE_SIZE = { width: 300, height: 336 }; // the UI is designed at this size, then zoomed
+const MARGIN = isLinux ? 12 : 0; // matches .deck's inset in style.css
+// the UI is designed at this size, then zoomed
+const BASE_SIZE = { width: 300 - 2 * MARGIN, height: 336 - 2 * MARGIN };
 const MIN_SCALE = 0.65;
 const MAX_SCALE = 2;
 // Hotkeys go through the turntable UI so they get the same animation + sounds as clicks.
@@ -120,6 +125,9 @@ function createWindow() {
   if (isMac) win.setVisibleOnAllWorkspaces(true);
 
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  if (isLinux) {
+    win.webContents.on('dom-ready', () => win.webContents.insertCSS('.deck { inset: 0; border-radius: 0; }'));
+  }
   win.webContents.on('did-finish-load', () => win.webContents.setZoomFactor(scale));
   win.once('ready-to-show', () => win.show());
 

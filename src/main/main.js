@@ -126,7 +126,7 @@ function createWindow() {
 
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   if (isLinux) {
-    win.webContents.on('dom-ready', () => win.webContents.insertCSS('.deck { inset: 0; border-radius: 0; }'));
+    win.webContents.on('dom-ready', () => win.webContents.insertCSS('.deck { inset: 0 !important; border-radius: 0 !important; box-shadow: none !important; }'));
   }
   win.webContents.on('did-finish-load', () => win.webContents.setZoomFactor(scale));
   win.once('ready-to-show', () => win.show());

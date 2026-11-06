@@ -93,6 +93,23 @@ function applyScale(next) {
   const { x, y } = win.getBounds();
   win.setBounds({ x, y, ...scaledSize() });
   win.webContents.setZoomFactor(scale);
+  roundCorners();
+}
+
+// Linux: clip the window itself to a rounded rectangle (one rect per pixel row),
+// so the corners are cut away rather than drawn as transparent pixels.
+function roundCorners() {
+  if (!isLinux) return;
+  const { width, height } = win.getBounds();
+  const r = Math.round(22 * scale);
+  const rects = [{ x: 0, y: r, width, height: height - 2 * r }];
+  for (let i = 0; i < r; i++) {
+    const dy = r - i - 0.5;
+    const inset = Math.round(r - Math.sqrt(r * r - dy * dy));
+    rects.push({ x: inset, y: i, width: width - 2 * inset, height: 1 });
+    rects.push({ x: inset, y: height - 1 - i, width: width - 2 * inset, height: 1 });
+  }
+  win.setShape(rects);
 }
 
 function createWindow() {
@@ -129,7 +146,7 @@ function createWindow() {
     win.webContents.on('dom-ready', () => win.webContents.insertCSS('.deck { inset: 0 !important; border-radius: 0 !important; box-shadow: none !important; }'));
   }
   win.webContents.on('did-finish-load', () => win.webContents.setZoomFactor(scale));
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => { roundCorners(); win.show(); });
 
   // Windows fires 'moved' continuously while dragging, so only save once things settle.
   win.on('moved', () => {
